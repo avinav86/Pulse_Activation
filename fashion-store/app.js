@@ -1866,3 +1866,98 @@ handleRoute();
     }).observe({ type: 'navigation', buffered: true });
   } catch (e) {}
 }());
+
+// ── Page Load Timing & Resource Timing ───────────────────────
+// Fires once after the window load event — all resources are done by then.
+// Captures the full navigation timing breakdown + per-resource network timings.
+window.addEventListener('load', function () {
+  // Small defer so the browser has flushed all timing entries.
+  setTimeout(function () {
+
+    // ── 1. Full page load breakdown (Navigation Timing API) ──
+    try {
+      var nav = performance.getEntriesByType('navigation')[0];
+      if (nav) {
+        var payload = {
+          // Key durations (all in ms, rounded)
+          dns_ms:           Math.round(nav.domainLookupEnd  - nav.domainLookupStart),
+          tcp_ms:           Math.round(nav.connectEnd        - nav.connectStart),
+          ssl_ms:           Math.round(nav.connectEnd        - nav.secureConnectionStart > 0
+                              ? nav.connectEnd - nav.secureConnectionStart : 0),
+          ttfb_ms:          Math.round(nav.responseStart     - nav.requestStart),
+          response_ms:      Math.round(nav.responseEnd       - nav.responseStart),
+          dom_interactive_ms: Math.round(nav.domInteractive  - nav.startTime),
+          dom_complete_ms:  Math.round(nav.domComplete       - nav.startTime),
+          load_event_ms:    Math.round(nav.loadEventEnd      - nav.startTime),
+          // Transfer info
+          transfer_size_kb: nav.transferSize ? parseFloat((nav.transferSize / 1024).toFixed(1)) : null,
+          encoded_body_kb:  nav.encodedBodySize ? parseFloat((nav.encodedBodySize / 1024).toFixed(1)) : null,
+          // Navigation meta
+          nav_type:         nav.type,        // 'navigate' | 'reload' | 'back_forward'
+          protocol:         nav.nextHopProtocol || null,  // 'h2', 'http/1.1', etc.
+          page_url:         window.location.href,
+          page_title:       document.title,
+        };
+        // Network Information API (Chrome/Android only)
+        var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+        if (conn) {
+          payload.network_type        = conn.effectiveType || null;  // '4g', '3g', '2g', 'slow-2g'
+          payload.network_downlink_mbps = conn.downlink    || null;
+          payload.network_rtt_ms      = conn.rtt           || null;
+          payload.network_save_data   = conn.saveData      || false;
+        }
+        dlPush('page_load_timing', payload);
+        convivaTrack('page_load_timing', payload);
+      }
+    } catch (e) {}
+
+    // ── 2. Per-resource network timings ──────────────────────
+    // Captures every JS, CSS, image, and font loaded on the page.
+    try {
+      var resources = performance.getEntriesByType('resource');
+      var summary = { js: [], css: [], img: [], font: [], other: [] };
+
+      resources.forEach(function (r) {
+        var ext = (r.name.split('?')[0].split('.').pop() || '').toLowerCase();
+        var bucket = ext === 'js'                          ? 'js'
+                   : ext === 'css'                         ? 'css'
+                   : /^(png|jpg|jpeg|gif|webp|svg|ico)$/.test(ext) ? 'img'
+                   : /^(woff2?|ttf|otf|eot)$/.test(ext)  ? 'font'
+                   : 'other';
+
+        var entry = {
+          url:             r.name.replace(window.location.origin, ''),
+          duration_ms:     Math.round(r.duration),
+          transfer_kb:     r.transferSize ? parseFloat((r.transferSize / 1024).toFixed(1)) : null,
+          protocol:        r.nextHopProtocol || null,
+          cached:          r.transferSize === 0 && r.decodedBodySize > 0,
+        };
+        summary[bucket].push(entry);
+      });
+
+      // Roll up counts + slowest resource per type
+      var rollup = {};
+      ['js', 'css', 'img', 'font', 'other'].forEach(function (type) {
+        var list = summary[type];
+        if (!list.length) return;
+        var slowest = list.reduce(function (a, b) { return a.duration_ms > b.duration_ms ? a : b; });
+        rollup[type + '_count']          = list.length;
+        rollup[type + '_total_kb']       = parseFloat(list.reduce(function (s, x) { return s + (x.transfer_kb || 0); }, 0).toFixed(1));
+        rollup[type + '_slowest_ms']     = slowest.duration_ms;
+        rollup[type + '_slowest_url']    = slowest.url;
+        rollup[type + '_cached_count']   = list.filter(function (x) { return x.cached; }).length;
+      });
+
+      rollup.total_resources   = resources.length;
+      rollup.total_transfer_kb = parseFloat(Object.keys(rollup)
+        .filter(function (k) { return k.endsWith('_total_kb'); })
+        .reduce(function (s, k) { return s + rollup[k]; }, 0).toFixed(1));
+      rollup.page_url          = window.location.href;
+      rollup.page_title        = document.title;
+
+      dlPush('resource_timing', rollup);
+      convivaTrack('resource_timing', rollup);
+    } catch (e) {}
+
+  }, 0);
+});
