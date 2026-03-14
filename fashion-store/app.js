@@ -1550,6 +1550,8 @@ document.getElementById('btn-place-order').addEventListener('click', () => {
 
 function placeOrder() {
   const orderNum = 'PULSE-' + Math.random().toString(36).toUpperCase().slice(2, 8);
+  // Conviva: step 3 complete (payment details confirmed, order submitted)
+  convivaTrack('checkout_step_completed', { step: 3, step_name: 'Payment' });
   // GA4 add_payment_info (card entered, order button clicked)
   dlPush('add_payment_info', {
     ecommerce: {
