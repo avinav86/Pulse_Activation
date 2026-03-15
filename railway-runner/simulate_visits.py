@@ -55,21 +55,24 @@ VIEWPORTS = [
     {"width": 820,  "height": 1180},
 ]
 
-CATEGORIES = ["all", "tops", "bottoms", "outerwear", "accessories"]
+CATEGORIES = ["all", "mens", "womens", "kids"]
 
-EMAILS = [
-    "alex.johnson@gmail.com", "sarah.smith@outlook.com", "mike.chen@yahoo.com",
-    "emma.davis@hotmail.com", "james.wilson@gmail.com", "olivia.brown@icloud.com",
-    "liam.taylor@gmail.com", "ava.martinez@outlook.com", "noah.anderson@gmail.com",
-    "sophia.thomas@yahoo.com", "ethan.jackson@gmail.com", "mia.white@hotmail.com",
+# Demo accounts that trigger autofill in the checkout form
+DEMO_EMAILS = [
+    "test@pulse.com",
+    "shopper@pulse.com",
+    "demo@pulse.com",
 ]
 
+# Increased conversion weight: 6 complete_purchase out of 18 = ~33% purchase rate
 SCENARIOS = [
-    "browse_only", "browse_only", "browse_only",
-    "product_view", "product_view", "product_view", "product_view",
-    "add_to_cart", "add_to_cart", "add_to_cart",
+    "browse_only", "browse_only",
+    "product_view", "product_view", "product_view",
+    "add_to_cart", "add_to_cart",
     "checkout_start", "checkout_start",
     "full_checkout", "full_checkout",
+    "complete_purchase", "complete_purchase", "complete_purchase",
+    "complete_purchase", "complete_purchase", "complete_purchase",
 ]
 
 # Browser args required for running inside a container (no sandbox)
@@ -151,21 +154,23 @@ async def scenario_checkout_start(page):
 
 
 async def scenario_full_checkout(page):
+    """Step 1 (email) + Step 2 (shipping) — stops before payment."""
     await scenario_checkout_start(page)
     try:
         email_field = page.locator("#checkout-email")
         if await email_field.count() > 0:
-            await email_field.first.fill(random.choice(EMAILS))
+            await email_field.first.fill(random.choice(DEMO_EMAILS))
             await wait(page, 400, 800)
         next_btn = page.locator("#btn-to-shipping")
         if await next_btn.count() > 0:
             await next_btn.first.click()
             await wait(page, 800, 1500)
+        # Correct field IDs matching the actual HTML (#ship-* not #shipping-*)
         for selector, value in [
-            ("#shipping-name",    "Test User"),
-            ("#shipping-address", "123 Main St"),
-            ("#shipping-city",    "New York"),
-            ("#shipping-zip",     "10001"),
+            ("#ship-name",    "Test User"),
+            ("#ship-address", "123 Main St"),
+            ("#ship-city",    "New York"),
+            ("#ship-zip",     "10001"),
         ]:
             field = page.locator(selector)
             if await field.count() > 0:
@@ -179,12 +184,35 @@ async def scenario_full_checkout(page):
         pass
 
 
+async def scenario_complete_purchase(page):
+    """Full funnel: browse → product → cart → checkout → payment → Place Order."""
+    await scenario_full_checkout(page)
+    try:
+        for selector, value in [
+            ("#card-number", "123456789012"),
+            ("#card-expiry", "12/27"),
+            ("#card-cvv",    "123"),
+        ]:
+            field = page.locator(selector)
+            if await field.count() > 0:
+                await field.first.fill(value)
+                await wait(page, 200, 400)
+        place_btn = page.locator("#btn-place-order")
+        if await place_btn.count() > 0:
+            await place_btn.first.click()
+            # Wait for order confirmation screen + Conviva purchase beacon to send
+            await wait(page, 2500, 4000)
+    except Exception:
+        pass
+
+
 SCENARIO_FNS = {
-    "browse_only":    scenario_browse_only,
-    "product_view":   scenario_product_view,
-    "add_to_cart":    scenario_add_to_cart,
-    "checkout_start": scenario_checkout_start,
-    "full_checkout":  scenario_full_checkout,
+    "browse_only":        scenario_browse_only,
+    "product_view":       scenario_product_view,
+    "add_to_cart":        scenario_add_to_cart,
+    "checkout_start":     scenario_checkout_start,
+    "full_checkout":      scenario_full_checkout,
+    "complete_purchase":  scenario_complete_purchase,
 }
 
 
@@ -203,7 +231,10 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
     try:
         await page.goto(TARGET, wait_until="networkidle", timeout=30000)
         await dismiss_ngrok_warning(page)
-        await wait(page, 800, 1500)
+        # Extra pause: lets window.load → page_load_timing / resource_timing
+        # convivaTrack() calls complete and Conviva's beacon dispatch before
+        # the scenario starts interacting with the page.
+        await wait(page, 1500, 2500)
         await SCENARIO_FNS[scenario_name](page)
         await wait(page, 1500, 2500)
         print(f"  [OK] Session {session_num:02d} | {scenario_name:<18} | {ua[50:90]}...", flush=True)
@@ -219,7 +250,7 @@ async def run_batch(batch_num=1):
     print(f"\n[Batch {batch_num}] PULSE Fashion — 30 sessions starting", flush=True)
     print(f"Target: {TARGET}", flush=True)
 
-    scenario_pool = (SCENARIOS * 3)[:30]
+    scenario_pool = (SCENARIOS * 2)[:30]
     random.shuffle(scenario_pool)
 
     sessions = [
