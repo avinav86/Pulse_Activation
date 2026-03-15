@@ -123,6 +123,10 @@ async def scenario_product_view(page):
 
 
 async def scenario_add_to_cart(page):
+    """Opens product page, selects a size, clicks Add to Bag.
+    #pp-add-btn calls addToCart() then setTimeout(openCart, 300) —
+    the cart sidebar opens automatically; no separate cart-icon click needed.
+    """
     await scenario_product_view(page)
     try:
         sizes = page.locator(".size-btn")
@@ -130,22 +134,22 @@ async def scenario_add_to_cart(page):
         if count > 0:
             await sizes.nth(random.randint(0, min(count - 1, 4))).click()
             await wait(page, 400, 800)
-        atc = page.locator("#add-to-cart-btn")
+        atc = page.locator("#pp-add-btn")   # correct ID — was #add-to-cart-btn
         if await atc.count() > 0:
             await atc.first.click()
-            await wait(page, 800, 1500)
+            await wait(page, 1200, 2000)    # must be > 300 ms so cart has time to open
     except Exception:
         pass
 
 
 async def scenario_checkout_start(page):
+    """Cart is already open after add-to-cart.
+    Go straight to .checkout-btn — clicking #cart-toggle would close the cart.
+    The button has no ID; selector is the class .checkout-btn.
+    """
     await scenario_add_to_cart(page)
     try:
-        cart = page.locator("#cart-icon")
-        if await cart.count() > 0:
-            await cart.first.click()
-            await wait(page, 800, 1500)
-        checkout = page.locator("#checkout-btn")
+        checkout = page.locator(".checkout-btn")
         if await checkout.count() > 0:
             await checkout.first.click()
             await wait(page, 1000, 2000)
