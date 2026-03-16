@@ -395,8 +395,9 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
 
 async def run_batch(batch_num=1):
     """Run one batch of 30 sessions, 2 concurrent at a time.
-    Concurrency is kept at 2 (not 3) to stay within Railway container memory limits.
-    return_exceptions=True on gather means one session failure never kills others.
+    A fresh async_playwright() context is created per sub-batch so memory
+    from previous Chromium processes is fully released between pairs.
+    return_exceptions=True means one session failure never kills its sibling.
     """
     print(f"\n[Batch {batch_num}] PULSE Fashion — 30 sessions starting", flush=True)
     print(f"Target: {TARGET}", flush=True)
@@ -414,19 +415,19 @@ async def run_batch(batch_num=1):
         for i in range(30)
     ]
 
-    async with async_playwright() as playwright:
-        for batch_start in range(0, 30, 2):
-            sub = sessions[batch_start:batch_start + 2]
-            sub_num = batch_start // 2 + 1
-            print(f"  Sub-batch {sub_num}/15  "
-                  f"(sessions {sub[0]['num']}-{sub[-1]['num']})", flush=True)
-            # return_exceptions=True: a failing session returns its exception
-            # as a value instead of propagating it — sibling sessions keep running
+    for batch_start in range(0, 30, 2):
+        sub = sessions[batch_start:batch_start + 2]
+        sub_num = batch_start // 2 + 1
+        print(f"  Sub-batch {sub_num}/15  "
+              f"(sessions {sub[0]['num']}-{sub[-1]['num']})", flush=True)
+        # Fresh playwright instance per sub-batch — fully releases Chromium
+        # memory between pairs, preventing late-batch OOM crashes
+        async with async_playwright() as playwright:
             await asyncio.gather(*[
                 run_session(playwright, s["num"], s["ua"], s["viewport"], s["scenario"])
                 for s in sub
             ], return_exceptions=True)
-            await asyncio.sleep(random.uniform(2.0, 4.0))
+        await asyncio.sleep(random.uniform(2.0, 4.0))
 
     print(f"[Batch {batch_num}] Done — 30 sessions completed.", flush=True)
 

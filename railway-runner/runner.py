@@ -1,6 +1,6 @@
 """
 Continuous traffic runner for Railway deployment.
-Runs 150 sessions (5 × 30) every 30 minutes, forever.
+Runs batches of 30 sessions back-to-back forever — no idle gaps.
 """
 
 import asyncio
@@ -9,8 +9,7 @@ import sys
 from datetime import datetime
 from simulate_visits import run_batch
 
-INTERVAL_SECONDS = 30 * 60   # 30 minutes
-BATCHES_PER_RUN  = 5         # 5 × 30 sessions = 150 per interval
+BATCHES_PER_RUN = 5   # log a "run complete" marker every 5 batches (150 sessions)
 
 
 def log(msg):
@@ -19,16 +18,17 @@ def log(msg):
 
 
 async def main():
-    run_num = 0
-    log("=== PULSE Traffic Runner started ===")
-    log(f"Config: {BATCHES_PER_RUN} batches × 30 sessions = {BATCHES_PER_RUN * 30} sessions every {INTERVAL_SECONDS // 60} min")
+    run_num   = 0
+    batch_num = 0
+    log("=== PULSE Traffic Runner started — running continuously ===")
 
     while True:
-        run_num += 1
+        run_num  += 1
         run_start = time.time()
         log(f"--- Run #{run_num} START ({BATCHES_PER_RUN * 30} sessions) ---")
 
         for b in range(1, BATCHES_PER_RUN + 1):
+            batch_num += 1
             log(f"  Batch {b}/{BATCHES_PER_RUN} starting...")
             try:
                 await run_batch(batch_num=f"{run_num}.{b}")
@@ -37,12 +37,7 @@ async def main():
             log(f"  Batch {b}/{BATCHES_PER_RUN} done.")
 
         elapsed = time.time() - run_start
-        log(f"--- Run #{run_num} COMPLETE in {elapsed:.0f}s ({BATCHES_PER_RUN * 30} sessions) ---")
-
-        sleep_for = max(0, INTERVAL_SECONDS - elapsed)
-        if sleep_for > 0:
-            log(f"Sleeping {sleep_for / 60:.1f} min until next run...")
-            await asyncio.sleep(sleep_for)
+        log(f"--- Run #{run_num} COMPLETE in {elapsed:.0f}s ({BATCHES_PER_RUN * 30} sessions) — next run starting immediately ---")
 
 
 if __name__ == "__main__":
