@@ -221,36 +221,52 @@ SCENARIO_FNS = {
 
 
 async def run_session(playwright, session_num, ua, viewport, scenario_name):
-    browser = await playwright.chromium.launch(headless=True, args=BROWSER_ARGS)
-    context = await browser.new_context(
-        user_agent=ua,
-        viewport=viewport,
-        locale=random.choice(["en-US", "en-GB", "en-CA", "en-AU"]),
-        timezone_id=random.choice([
-            "America/New_York", "America/Chicago", "America/Los_Angeles",
-            "America/Denver", "Europe/London", "Europe/Paris", "Asia/Singapore",
-        ]),
-    )
-    page = await context.new_page()
+    """Run a single browser session. All errors are caught internally so they
+    never propagate to asyncio.gather and kill sibling sessions."""
+    browser = None
+    context = None
     try:
-        await page.goto(TARGET, wait_until="networkidle", timeout=30000)
-        await dismiss_ngrok_warning(page)
+        browser = await playwright.chromium.launch(headless=True, args=BROWSER_ARGS)
+        context = await browser.new_context(
+            user_agent=ua,
+            viewport=viewport,
+            locale=random.choice(["en-US", "en-GB", "en-CA", "en-AU"]),
+            timezone_id=random.choice([
+                "America/New_York", "America/Chicago", "America/Los_Angeles",
+                "America/Denver", "Europe/London", "Europe/Paris", "Asia/Singapore",
+            ]),
+        )
+        page = await context.new_page()
+        await page.goto(TARGET, wait_until="networkidle", timeout=45000)
         # Extra pause: lets window.load → page_load_timing / resource_timing
-        # convivaTrack() calls complete and Conviva's beacon dispatch before
-        # the scenario starts interacting with the page.
+        # convivaTrack() calls complete and Conviva beacon dispatches
+        # before the scenario starts interacting with the page.
         await wait(page, 1500, 2500)
         await SCENARIO_FNS[scenario_name](page)
         await wait(page, 1500, 2500)
         print(f"  [OK] Session {session_num:02d} | {scenario_name:<18} | {ua[50:90]}...", flush=True)
     except Exception as e:
-        print(f"  [!!] Session {session_num:02d} error: {e}", flush=True)
+        print(f"  [!!] Session {session_num:02d} | {scenario_name:<18} | {e}", flush=True)
     finally:
-        await context.close()
-        await browser.close()
+        # Suppress close errors — browser may already be gone if playwright
+        # context exited or a previous error caused teardown
+        try:
+            if context:
+                await context.close()
+        except Exception:
+            pass
+        try:
+            if browser:
+                await browser.close()
+        except Exception:
+            pass
 
 
 async def run_batch(batch_num=1):
-    """Run one batch of 30 sessions (5 × 6 concurrent)."""
+    """Run one batch of 30 sessions, 2 concurrent at a time.
+    Concurrency is kept at 2 (not 3) to stay within Railway container memory limits.
+    return_exceptions=True on gather means one session failure never kills others.
+    """
     print(f"\n[Batch {batch_num}] PULSE Fashion — 30 sessions starting", flush=True)
     print(f"Target: {TARGET}", flush=True)
 
@@ -268,14 +284,17 @@ async def run_batch(batch_num=1):
     ]
 
     async with async_playwright() as playwright:
-        for batch_start in range(0, 30, 3):
-            batch = sessions[batch_start:batch_start + 3]
-            print(f"  Sub-batch {batch_start // 3 + 1}/10  "
-                  f"(sessions {batch[0]['num']}-{batch[-1]['num']})", flush=True)
+        for batch_start in range(0, 30, 2):
+            sub = sessions[batch_start:batch_start + 2]
+            sub_num = batch_start // 2 + 1
+            print(f"  Sub-batch {sub_num}/15  "
+                  f"(sessions {sub[0]['num']}-{sub[-1]['num']})", flush=True)
+            # return_exceptions=True: a failing session returns its exception
+            # as a value instead of propagating it — sibling sessions keep running
             await asyncio.gather(*[
                 run_session(playwright, s["num"], s["ua"], s["viewport"], s["scenario"])
-                for s in batch
-            ])
+                for s in sub
+            ], return_exceptions=True)
             await asyncio.sleep(random.uniform(2.0, 4.0))
 
     print(f"[Batch {batch_num}] Done — 30 sessions completed.", flush=True)
