@@ -57,22 +57,100 @@ VIEWPORTS = [
 
 CATEGORIES = ["all", "mens", "womens", "kids"]
 
-# Demo accounts that trigger autofill in the checkout form
-DEMO_EMAILS = [
-    "test@pulse.com",
-    "shopper@pulse.com",
-    "demo@pulse.com",
+# Building blocks for on-the-fly identity generation.
+# Combinations: 80 first × 80 last × 8 domains × 1000 suffixes = 51.2M unique emails.
+# Each checkout session generates a fresh identity — no fixed pool, no repeats.
+_FIRST_NAMES = [
+    "Emma","Liam","Olivia","Noah","Ava","Elijah","Sophia","James","Isabella","Benjamin",
+    "Mia","Lucas","Charlotte","Henry","Amelia","Alexander","Harper","Mason","Evelyn","Ethan",
+    "Abigail","Daniel","Emily","Jackson","Elizabeth","Sebastian","Sofia","Aiden","Scarlett","Gabriel",
+    "Victoria","Carter","Riley","Penelope","Wyatt","Nora","Jayden","Lily","Dylan","Zoey",
+    "Jack","Grace","Luke","Chloe","Owen","Layla","Julian","Aria","Grayson","Stella",
+    "Logan","Hannah","Nathan","Addison","Ryan","Leah","Brandon","Samantha","Tyler","Natalie",
+    "Caleb","Zoe","Justin","Lillian","Aaron","Savannah","Patrick","Audrey","Marcus","Claire",
+    "Derek","Allison","Trevor","Kayla","Colin","Morgan","Seth","Hailey","Spencer","Brooke",
+]
+_LAST_NAMES = [
+    "Johnson","Smith","Brown","Davis","Wilson","Martinez","Anderson","Taylor","Thomas","Lee",
+    "Harris","Clark","Lewis","Robinson","Walker","Hall","Young","Allen","King","Wright",
+    "Scott","Green","Adams","Baker","Gonzalez","Nelson","Carter","Mitchell","Perez","Roberts",
+    "Turner","Phillips","Campbell","Parker","Evans","Edwards","Collins","Stewart","Sanchez","Morris",
+    "Rogers","Reed","Cook","Bailey","Rivera","Cooper","Richardson","Cox","Howard","Ward",
+    "Torres","Peterson","Gray","Ramirez","James","Watson","Brooks","Kelly","Sanders","Price",
+    "Bennett","Wood","Barnes","Ross","Henderson","Coleman","Jenkins","Perry","Powell","Long",
+    "Patterson","Hughes","Flores","Washington","Butler","Simmons","Foster","Gonzales","Bryant","Alexander",
+]
+_EMAIL_DOMAINS = [
+    "gmail.com","yahoo.com","outlook.com","icloud.com",
+    "hotmail.com","me.com","live.com","protonmail.com",
+]
+_STREETS = [
+    "Maple Ave","Oak Street","Pine Road","Birch Lane","Cedar Blvd","Elm Court","Walnut Dr",
+    "Spruce Way","Aspen Circle","Poplar Ave","Willow St","Sycamore Rd","Magnolia Lane",
+    "Redwood Blvd","Juniper Dr","Hawthorn Ct","Cypress Ave","Dogwood Way","Hickory Blvd",
+    "Chestnut St","Rosewood Dr","Peach Tree Ln","Blossom Ave","Fern Circle","Clover Rd",
+    "Ivy Lane","Lotus Blvd","Azalea Dr","Dahlia Way","Orchid Ave","Tulip Court","Lavender Ln",
+    "Violet Ave","Honeysuckle Dr","Sunflower Rd","Marigold Way","Periwinkle Ct","Pansy Lane",
+]
+_CITIES = [
+    ("Austin","TX","73301"),("Denver","CO","80201"),("Seattle","WA","98101"),
+    ("Portland","OR","97201"),("Nashville","TN","37201"),("Miami","FL","33101"),
+    ("Atlanta","GA","30301"),("Chicago","IL","60601"),("Dallas","TX","75201"),
+    ("Phoenix","AZ","85001"),("Los Angeles","CA","90001"),("San Diego","CA","92101"),
+    ("Houston","TX","77001"),("San Francisco","CA","94101"),("Boston","MA","02101"),
+    ("New York","NY","10001"),("Philadelphia","PA","19101"),("San Antonio","TX","78201"),
+    ("Minneapolis","MN","55401"),("Detroit","MI","48201"),("Las Vegas","NV","89101"),
+    ("Baltimore","MD","21201"),("Charlotte","NC","28201"),("Memphis","TN","38101"),
+    ("Louisville","KY","40201"),("Washington","DC","20001"),("Raleigh","NC","27601"),
+    ("Tampa","FL","33601"),("New Orleans","LA","70112"),("Oakland","CA","94601"),
+    ("Cleveland","OH","44101"),("Wichita","KS","67201"),("Arlington","TX","76001"),
+    ("Aurora","CO","80010"),("Omaha","NE","68101"),("Virginia Beach","VA","23451"),
 ]
 
-# Increased conversion weight: 6 complete_purchase out of 18 = ~33% purchase rate
+
+def generate_shopper():
+    """Generate a unique shopper identity for each checkout session.
+    With millions of possible combinations, repeat users within a day are
+    negligible — Conviva sees a fresh identified user on every purchase.
+    """
+    first  = random.choice(_FIRST_NAMES)
+    last   = random.choice(_LAST_NAMES)
+    suffix = random.randint(1, 999)
+    sep    = random.choice([".", "_", ""])
+    domain = random.choice(_EMAIL_DOMAINS)
+    # e.g. emma.johnson847@gmail.com  or  olivia_brown12@yahoo.com
+    email  = f"{first.lower()}{sep}{last.lower()}{suffix}@{domain}"
+    city, state, base_zip = random.choice(_CITIES)
+    zip_code = str(int(base_zip) + random.randint(0, 50)).zfill(5)
+    address  = f"{random.randint(1, 999)} {random.choice(_STREETS)}"
+    return {
+        "name":    f"{first} {last}",
+        "email":   email,
+        "address": address,
+        "city":    city,
+        "state":   state,
+        "zip":     zip_code,
+    }
+
+# Realistic funnel mix — mirrors real e-commerce drop-off at each stage
+# browse/view → add to cart → open checkout → email → shipping → purchase
 SCENARIOS = [
-    "browse_only", "browse_only",
-    "product_view", "product_view", "product_view",
-    "add_to_cart", "add_to_cart",
-    "checkout_start", "checkout_start",
-    "full_checkout", "full_checkout",
-    "complete_purchase", "complete_purchase", "complete_purchase",
-    "complete_purchase", "complete_purchase", "complete_purchase",
+    "browse_only",           # lands, scrolls, leaves
+    "bounce",                # lands and leaves almost immediately
+    "product_view",          # views a product but doesn't add
+    "product_view",
+    "product_view",
+    "add_to_cart",           # adds to cart but never opens checkout
+    "cart_abandon",          # opens checkout modal then closes it
+    "cart_abandon",          # opens checkout modal then closes it
+    "email_abandon",         # types email then exits
+    "checkout_start",        # opens checkout, doesn't fill anything
+    "full_checkout",         # completes email + shipping, abandons at payment
+    "full_checkout",
+    "complete_purchase",     # goes all the way — buys
+    "complete_purchase",
+    "complete_purchase",
+    "complete_purchase",
 ]
 
 # Browser args required for running inside a container (no sandbox)
@@ -91,6 +169,13 @@ async def wait(page, ms_min=600, ms_max=1800):
 
 async def dismiss_ngrok_warning(page):
     pass  # No longer needed — site is on Railway
+
+
+async def scenario_bounce(page):
+    """User lands on the page, glances briefly, and leaves — no interaction."""
+    await wait(page, 800, 2000)
+    await page.evaluate("window.scrollBy(0, 150)")
+    await wait(page, 500, 1200)
 
 
 async def scenario_browse_only(page):
@@ -157,24 +242,61 @@ async def scenario_checkout_start(page):
         pass
 
 
-async def scenario_full_checkout(page):
-    """Step 1 (email) + Step 2 (shipping) — stops before payment."""
+async def scenario_cart_abandon(page):
+    """Adds item to cart, opens checkout modal, then thinks better of it and closes."""
+    await scenario_add_to_cart(page)
+    try:
+        checkout = page.locator(".checkout-btn")
+        if await checkout.count() > 0:
+            await checkout.first.click()
+            await wait(page, 1500, 3000)   # user stares at checkout modal
+            close_btn = page.locator("#checkout-modal-close")
+            if await close_btn.count() > 0:
+                await close_btn.first.click()
+                await wait(page, 800, 1500)
+    except Exception:
+        pass
+
+
+async def scenario_email_abandon(page):
+    """Opens checkout, starts typing email, then closes without continuing."""
     await scenario_checkout_start(page)
     try:
         email_field = page.locator("#checkout-email")
         if await email_field.count() > 0:
-            await email_field.first.fill(random.choice(DEMO_EMAILS))
+            shopper = generate_shopper()
+            # Type only the email — no Continue click
+            await email_field.first.fill(shopper["email"])
+            await wait(page, 1500, 3000)   # user hesitates
+            close_btn = page.locator("#checkout-modal-close")
+            if await close_btn.count() > 0:
+                await close_btn.first.click()
+                await wait(page, 500, 1000)
+    except Exception:
+        pass
+
+
+async def scenario_full_checkout(page, shopper=None):
+    """Step 1 (email) + Step 2 (shipping) — stops before payment.
+    Uses a real shopper identity; anonymous sessions never reach this function.
+    """
+    if shopper is None:
+        shopper = generate_shopper()
+    await scenario_checkout_start(page)
+    try:
+        email_field = page.locator("#checkout-email")
+        if await email_field.count() > 0:
+            await email_field.first.fill(shopper["email"])
             await wait(page, 400, 800)
         next_btn = page.locator("#btn-to-shipping")
         if await next_btn.count() > 0:
             await next_btn.first.click()
             await wait(page, 800, 1500)
-        # Correct field IDs matching the actual HTML (#ship-* not #shipping-*)
         for selector, value in [
-            ("#ship-name",    "Test User"),
-            ("#ship-address", "123 Main St"),
-            ("#ship-city",    "New York"),
-            ("#ship-zip",     "10001"),
+            ("#ship-name",    shopper["name"]),
+            ("#ship-address", shopper["address"]),
+            ("#ship-city",    shopper["city"]),
+            ("#ship-zip",     shopper["zip"]),
         ]:
             field = page.locator(selector)
             if await field.count() > 0:
@@ -186,16 +308,22 @@ async def scenario_full_checkout(page):
             await wait(page, 800, 1500)
     except Exception:
         pass
+    return shopper
 
 
 async def scenario_complete_purchase(page):
-    """Full funnel: browse → product → cart → checkout → payment → Place Order."""
-    await scenario_full_checkout(page)
+    """Full funnel: browse → product → cart → checkout → payment → Place Order.
+    Picks one shopper identity and uses it consistently through email,
+    shipping name, and card-name fields.
+    """
+    shopper = generate_shopper()
+    await scenario_full_checkout(page, shopper=shopper)
     try:
         for selector, value in [
             ("#card-number", "123456789012"),
             ("#card-expiry", "12/27"),
             ("#card-cvv",    "123"),
+            ("#card-name",   shopper["name"]),
         ]:
             field = page.locator(selector)
             if await field.count() > 0:
@@ -211,9 +339,12 @@ async def scenario_complete_purchase(page):
 
 
 SCENARIO_FNS = {
+    "bounce":             scenario_bounce,
     "browse_only":        scenario_browse_only,
     "product_view":       scenario_product_view,
     "add_to_cart":        scenario_add_to_cart,
+    "cart_abandon":       scenario_cart_abandon,
+    "email_abandon":      scenario_email_abandon,
     "checkout_start":     scenario_checkout_start,
     "full_checkout":      scenario_full_checkout,
     "complete_purchase":  scenario_complete_purchase,
