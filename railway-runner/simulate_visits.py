@@ -153,13 +153,31 @@ SCENARIOS = [
     "complete_purchase",
 ]
 
-# Browser args required for running inside a container (no sandbox)
+# Browser args tuned for Railway containers — minimize thread/process usage
+# to stay within the container's pthread limit (~50 threads total).
 BROWSER_ARGS = [
     "--no-sandbox",
+    "--disable-setuid-sandbox",
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--disable-setuid-sandbox",
-    "--single-process",
+    "--single-process",              # all renderer logic in one process
+    "--disable-extensions",          # skip extension threads
+    "--disable-background-networking",
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-breakpad",            # no crash reporter threads
+    "--disable-client-side-phishing-detection",
+    "--disable-default-apps",
+    "--disable-hang-monitor",
+    "--disable-popup-blocking",
+    "--disable-prompt-on-repost",
+    "--disable-sync",
+    "--disable-translate",
+    "--disable-features=AudioServiceOutOfProcess,TranslateUI",
+    "--metrics-recording-only",
+    "--mute-audio",
+    "--no-first-run",
+    "--safebrowsing-disable-auto-update",
 ]
 
 
@@ -414,10 +432,12 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
 
 
 async def run_batch(batch_num=1):
-    """Run one batch of 30 sessions, 2 concurrent at a time.
-    A fresh async_playwright() context is created per sub-batch so memory
-    from previous Chromium processes is fully released between pairs.
-    return_exceptions=True means one session failure never kills its sibling.
+    """Run 30 sessions strictly one at a time.
+
+    Each session gets its own async_playwright() context so Chromium is fully
+    torn down between sessions — no thread accumulation, no pthread_create
+    errors.  Serialising also keeps peak thread count within Railway's container
+    limit (~50 threads) so every session completes successfully with no gaps.
     """
     print(f"\n[Batch {batch_num}] PULSE Fashion — 30 sessions starting", flush=True)
     print(f"Target: {TARGET}", flush=True)
@@ -425,29 +445,18 @@ async def run_batch(batch_num=1):
     scenario_pool = (SCENARIOS * 2)[:30]
     random.shuffle(scenario_pool)
 
-    sessions = [
-        {
+    for i in range(30):
+        s = {
             "num":      i + 1,
             "ua":       USER_AGENTS[i % len(USER_AGENTS)],
             "viewport": random.choice(VIEWPORTS),
             "scenario": scenario_pool[i],
         }
-        for i in range(30)
-    ]
-
-    for batch_start in range(0, 30, 2):
-        sub = sessions[batch_start:batch_start + 2]
-        sub_num = batch_start // 2 + 1
-        print(f"  Sub-batch {sub_num}/15  "
-              f"(sessions {sub[0]['num']}-{sub[-1]['num']})", flush=True)
-        # Fresh playwright instance per sub-batch — fully releases Chromium
-        # memory between pairs, preventing late-batch OOM crashes
         async with async_playwright() as playwright:
-            await asyncio.gather(*[
-                run_session(playwright, s["num"], s["ua"], s["viewport"], s["scenario"])
-                for s in sub
-            ], return_exceptions=True)
-        await asyncio.sleep(random.uniform(2.0, 4.0))
+            await run_session(playwright, s["num"], s["ua"], s["viewport"], s["scenario"])
+        # Brief pause between sessions — lets OS reclaim file descriptors
+        # and threads from the closed Chromium before next launch
+        await asyncio.sleep(random.uniform(1.0, 2.0))
 
     print(f"[Batch {batch_num}] Done — 30 sessions completed.", flush=True)
 
