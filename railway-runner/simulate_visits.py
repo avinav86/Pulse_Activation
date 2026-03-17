@@ -351,9 +351,11 @@ SCENARIO_FNS = {
 }
 
 
-async def run_session(playwright, session_num, ua, viewport, scenario_name):
-    """Run a single browser session. All errors are caught internally so they
-    never propagate to asyncio.gather and kill sibling sessions."""
+SESSION_TIMEOUT = 120   # seconds — hard cap per session to prevent infinite hangs
+
+
+async def _run_session_inner(playwright, session_num, ua, viewport, scenario_name):
+    """Core session logic. Called inside asyncio.wait_for so it has a hard timeout."""
     browser = None
     context = None
     try:
@@ -367,6 +369,9 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
                 "America/Denver", "Europe/London", "Europe/Paris", "Asia/Singapore",
             ]),
         )
+        # Cap every element interaction (click, fill, locator) at 15s
+        # so a single stuck await never blocks the whole session
+        context.set_default_timeout(15000)
         page = await context.new_page()
         await page.goto(TARGET, wait_until="networkidle", timeout=45000)
         # Extra pause: lets window.load → page_load_timing / resource_timing
@@ -379,8 +384,6 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
     except Exception as e:
         print(f"  [!!] Session {session_num:02d} | {scenario_name:<18} | {e}", flush=True)
     finally:
-        # Suppress close errors — browser may already be gone if playwright
-        # context exited or a previous error caused teardown
         try:
             if context:
                 await context.close()
@@ -391,6 +394,18 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
                 await browser.close()
         except Exception:
             pass
+
+
+async def run_session(playwright, session_num, ua, viewport, scenario_name):
+    """Wrapper that enforces a hard SESSION_TIMEOUT so a hung browser
+    never blocks asyncio.gather indefinitely."""
+    try:
+        await asyncio.wait_for(
+            _run_session_inner(playwright, session_num, ua, viewport, scenario_name),
+            timeout=SESSION_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        print(f"  [TO] Session {session_num:02d} | {scenario_name:<18} | timed out after {SESSION_TIMEOUT}s", flush=True)
 
 
 async def run_batch(batch_num=1):
