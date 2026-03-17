@@ -354,13 +354,35 @@ SCENARIO_FNS = {
 SESSION_TIMEOUT = 120   # seconds — hard cap per session to prevent infinite hangs
 
 
-async def _run_session_inner(playwright, session_num, ua, viewport, scenario_name):
-    """Core session logic. Called inside asyncio.wait_for so it has a hard timeout."""
-    browser = None
-    context = None
+async def _close(obj):
+    """Close a Playwright browser or context with a 5s hard cap.
+    Uses BaseException so CancelledError from an outer wait_for timeout
+    cannot bypass cleanup and leave orphaned Chromium processes."""
+    if obj is None:
+        return
     try:
-        browser = await playwright.chromium.launch(headless=True, args=BROWSER_ARGS)
-        context = await browser.new_context(
+        await asyncio.wait_for(obj.close(), timeout=5)
+    except BaseException:
+        pass
+
+
+async def run_session(playwright, session_num, ua, viewport, scenario_name):
+    """Run one browser session with a hard SESSION_TIMEOUT cap.
+
+    browser/context are stored in a mutable dict so the outer finally block
+    can always call _close() on them — even after asyncio.wait_for cancels
+    the inner coroutine.  _close() has its own 5s timeout + BaseException
+    guard so a hung browser.close() can never deadlock the runner.
+
+    asyncio.timeout() (3.11+) is NOT used — Railway runs Python 3.10.
+    """
+    state = {"browser": None, "context": None}
+
+    async def _inner():
+        state["browser"] = await playwright.chromium.launch(
+            headless=True, args=BROWSER_ARGS
+        )
+        state["context"] = await state["browser"].new_context(
             user_agent=ua,
             viewport=viewport,
             locale=random.choice(["en-US", "en-GB", "en-CA", "en-AU"]),
@@ -370,42 +392,25 @@ async def _run_session_inner(playwright, session_num, ua, viewport, scenario_nam
             ]),
         )
         # Cap every element interaction (click, fill, locator) at 15s
-        # so a single stuck await never blocks the whole session
-        context.set_default_timeout(15000)
-        page = await context.new_page()
+        state["context"].set_default_timeout(15000)
+        page = await state["context"].new_page()
         await page.goto(TARGET, wait_until="networkidle", timeout=45000)
-        # Extra pause: lets window.load → page_load_timing / resource_timing
-        # convivaTrack() calls complete and Conviva beacon dispatches
-        # before the scenario starts interacting with the page.
+        # Extra pause: lets window.load → page_load_timing / resource_timing fire
         await wait(page, 1500, 2500)
         await SCENARIO_FNS[scenario_name](page)
         await wait(page, 1500, 2500)
         print(f"  [OK] Session {session_num:02d} | {scenario_name:<18} | {ua[50:90]}...", flush=True)
+
+    try:
+        await asyncio.wait_for(_inner(), timeout=SESSION_TIMEOUT)
+    except asyncio.TimeoutError:
+        print(f"  [TO] Session {session_num:02d} | {scenario_name:<18} | timed out after {SESSION_TIMEOUT}s", flush=True)
     except Exception as e:
         print(f"  [!!] Session {session_num:02d} | {scenario_name:<18} | {e}", flush=True)
     finally:
-        try:
-            if context:
-                await context.close()
-        except Exception:
-            pass
-        try:
-            if browser:
-                await browser.close()
-        except Exception:
-            pass
-
-
-async def run_session(playwright, session_num, ua, viewport, scenario_name):
-    """Wrapper that enforces a hard SESSION_TIMEOUT so a hung browser
-    never blocks asyncio.gather indefinitely."""
-    try:
-        await asyncio.wait_for(
-            _run_session_inner(playwright, session_num, ua, viewport, scenario_name),
-            timeout=SESSION_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        print(f"  [TO] Session {session_num:02d} | {scenario_name:<18} | timed out after {SESSION_TIMEOUT}s", flush=True)
+        # Always runs — _close() is bounded and handles CancelledError safely
+        await _close(state["context"])
+        await _close(state["browser"])
 
 
 async def run_batch(batch_num=1):
