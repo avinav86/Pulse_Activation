@@ -153,19 +153,23 @@ SCENARIOS = [
     "complete_purchase",
 ]
 
-# Browser args tuned for Railway containers — minimize thread/process usage
-# to stay within the container's pthread limit (~50 threads total).
+# Browser args tuned for Railway containers.
+# --no-zygote is critical: prevents Chromium from forking a zygote helper
+# process. Without it the container PID namespace fills up after ~50 runs.
+# --single-process keeps all renderer logic in the main process.
+# Together they mean Chromium runs as a single PID with no child forks.
 BROWSER_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
+    "--no-zygote",                   # CRITICAL — stop zygote fork exhausting PIDs
+    "--single-process",              # renderer in same process, no child forks
     "--disable-dev-shm-usage",
     "--disable-gpu",
-    "--single-process",              # all renderer logic in one process
-    "--disable-extensions",          # skip extension threads
+    "--disable-extensions",
     "--disable-background-networking",
     "--disable-background-timer-throttling",
     "--disable-backgrounding-occluded-windows",
-    "--disable-breakpad",            # no crash reporter threads
+    "--disable-breakpad",
     "--disable-client-side-phishing-detection",
     "--disable-default-apps",
     "--disable-hang-monitor",
@@ -432,12 +436,15 @@ async def run_session(playwright, session_num, ua, viewport, scenario_name):
 
 
 async def run_batch(batch_num=1):
-    """Run 30 sessions strictly one at a time.
+    """Run 30 sessions strictly one at a time under a single Playwright instance.
 
-    Each session gets its own async_playwright() context so Chromium is fully
-    torn down between sessions — no thread accumulation, no pthread_create
-    errors.  Serialising also keeps peak thread count within Railway's container
-    limit (~50 threads) so every session completes successfully with no gaps.
+    One async_playwright() per batch (not per session) means only one
+    Playwright Node.js server subprocess is spawned per batch instead of 30.
+    This keeps the container PID count stable regardless of how long the
+    runner has been running.
+
+    Sessions still run serially so peak Chromium thread count stays low.
+    Each session creates + destroys its own browser/context/page.
     """
     print(f"\n[Batch {batch_num}] PULSE Fashion — 30 sessions starting", flush=True)
     print(f"Target: {TARGET}", flush=True)
@@ -445,18 +452,17 @@ async def run_batch(batch_num=1):
     scenario_pool = (SCENARIOS * 2)[:30]
     random.shuffle(scenario_pool)
 
-    for i in range(30):
-        s = {
-            "num":      i + 1,
-            "ua":       USER_AGENTS[i % len(USER_AGENTS)],
-            "viewport": random.choice(VIEWPORTS),
-            "scenario": scenario_pool[i],
-        }
-        async with async_playwright() as playwright:
+    async with async_playwright() as playwright:
+        for i in range(30):
+            s = {
+                "num":      i + 1,
+                "ua":       USER_AGENTS[i % len(USER_AGENTS)],
+                "viewport": random.choice(VIEWPORTS),
+                "scenario": scenario_pool[i],
+            }
             await run_session(playwright, s["num"], s["ua"], s["viewport"], s["scenario"])
-        # Brief pause between sessions — lets OS reclaim file descriptors
-        # and threads from the closed Chromium before next launch
-        await asyncio.sleep(random.uniform(1.0, 2.0))
+            # Brief pause — lets OS reclaim file descriptors from closed Chromium
+            await asyncio.sleep(random.uniform(1.0, 2.0))
 
     print(f"[Batch {batch_num}] Done — 30 sessions completed.", flush=True)
 
